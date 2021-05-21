@@ -4,7 +4,6 @@ import {
   TransformerContext,
   InvalidDirectiveError,
   getDirectiveArguments,
-  TransformerContractError,
 } from "graphql-transformer-core";
 import {
   obj,
@@ -25,6 +24,7 @@ import {
 } from "graphql-transformer-common";
 
 const FIREHOSE_DIRECTIVE_STACK = "FirehoseDirectiveStack";
+const DYNAMODB_METADATA_KEY = "DynamoDBTransformerMetadata";
 
 const lambdaArnKey = (name: string, region?: string) => {
   return region
@@ -67,6 +67,25 @@ export class FirehoseTransformer extends Transformer {
     directive: DirectiveNode,
     ctx: TransformerContext
   ) => {
+    this.validateObject(definition);
+
+    const firehoseLambdaFunctionId = this.createLambdaFunctionResources(
+      directive,
+      ctx
+    );
+
+    this.createFirehoseResolver(
+      ctx,
+      firehoseLambdaFunctionId,
+      ResolverResourceIDs.DynamoDBCreateResolverResourceID(
+        definition.name.value
+      ),
+      "Mutation",
+      `create${definition.name.value}`
+    );
+  };
+
+  private validateObject = (definition: ObjectTypeDefinitionNode) => {
     const modelDirective = (definition.directives || []).find(
       (directive) => directive.name.value === "model"
     );
@@ -75,63 +94,13 @@ export class FirehoseTransformer extends Transformer {
         "Types annotated with @firehose must also be annotated with @model."
       );
     }
+  };
 
+  private createLambdaFunctionResources = (
+    directive: DirectiveNode,
+    ctx: TransformerContext
+  ) => {
     const { name, region } = getDirectiveArguments(directive);
-    if (!name) {
-      throw new TransformerContractError("Must supply a 'name' to @firehose.");
-    }
-
-    // get already existing create mutation resolver
-    const originalCreateResolverId = ResolverResourceIDs.DynamoDBCreateResolverResourceID(
-      definition.name.value
-    );
-    const createResolver = ctx.getResource(originalCreateResolverId);
-    if (!createResolver.Properties) {
-      throw new Error(
-        "Could not find any properties in the generated resource."
-      );
-    }
-
-    // build a pipeline function and copy the original data source and mapping templates
-    const createPipelineFunctionId = `MutationCreate${definition.name.value}Function`;
-    ctx.setResource(
-      createPipelineFunctionId,
-      new AppSync.FunctionConfiguration({
-        ApiId: Fn.GetAtt(
-          ResourceConstants.RESOURCES.GraphQLAPILogicalID,
-          "ApiId"
-        ),
-        DataSourceName: createResolver.Properties.DataSourceName,
-        FunctionVersion: "2018-05-29",
-        Name: createPipelineFunctionId,
-        RequestMappingTemplate:
-          createResolver.Properties.RequestMappingTemplate,
-        ResponseMappingTemplate:
-          createResolver.Properties.ResponseMappingTemplate,
-      })
-    );
-    ctx.mapResourceToStack(FIREHOSE_DIRECTIVE_STACK, createPipelineFunctionId);
-
-    // the @model directive does not finalize the resolver mappings directly but only in the
-    // after() phase, which is executed after the firehose directive. Therefore we have to
-    // finalize the resolvers ourselves to get the auto-generated ID as well as the create and
-    // update dates in our DynamoDB pipeline function.
-    const ddbMetata = ctx.metadata.get("DynamoDBTransformerMetadata");
-    const hoistedContentGenerator =
-      ddbMetata?.hoistedRequestMappingContent[originalCreateResolverId];
-    if (hoistedContentGenerator) {
-      const hoistedContent = hoistedContentGenerator();
-      if (hoistedContent) {
-        const resource: AppSync.Resolver = ctx.getResource(
-          createPipelineFunctionId
-        ) as any;
-        resource.Properties.RequestMappingTemplate = [
-          hoistedContent,
-          resource.Properties.RequestMappingTemplate,
-        ].join("\n");
-        ctx.setResource(createPipelineFunctionId, resource);
-      }
-    }
 
     // create new IAM role to execute firehose lambda if not yet existing
     const iamRoleId = FunctionResourceIDs.FunctionIAMRoleID(name, region);
@@ -142,19 +111,19 @@ export class FirehoseTransformer extends Transformer {
           RoleName: Fn.If(
             ResourceConstants.CONDITIONS.HasEnvironmentParameter,
             Fn.Join("-", [
-              FunctionResourceIDs.FunctionIAMRoleName(name, true), // max of 64. 64-10-26-28 = 0
+              FunctionResourceIDs.FunctionIAMRoleName(name, true),
               Fn.GetAtt(
                 ResourceConstants.RESOURCES.GraphQLAPILogicalID,
                 "ApiId"
-              ), // 26
-              Fn.Ref(ResourceConstants.PARAMETERS.Env), // 10
+              ),
+              Fn.Ref(ResourceConstants.PARAMETERS.Env),
             ]),
             Fn.Join("-", [
-              FunctionResourceIDs.FunctionIAMRoleName(name, false), // max of 64. 64-26-38 = 0
+              FunctionResourceIDs.FunctionIAMRoleName(name, false),
               Fn.GetAtt(
                 ResourceConstants.RESOURCES.GraphQLAPILogicalID,
                 "ApiId"
-              ), // 26
+              ),
             ])
           ),
           AssumeRolePolicyDocument: {
@@ -266,22 +235,82 @@ export class FirehoseTransformer extends Transformer {
       );
     }
 
-    // completely wipe out the original create mutation resolver to avoid circular dependencies between stacks
+    return firehoseLambdaFunctionId;
+  };
+
+  private createFirehoseResolver = (
+    ctx: TransformerContext,
+    firehoseLambdaFunctionId: string,
+    originalResolverId: string,
+    typeName: string,
+    fieldName: string
+  ) => {
+    const fieldNameFirstletterUppercase =
+      fieldName[0].toUpperCase() + fieldName.substring(1);
+
+    // get already existing resolver
+    const originalResolver = ctx.getResource(originalResolverId);
+    if (!originalResolver.Properties) {
+      throw new Error(
+        "Could not find any properties in the generated resource."
+      );
+    }
+
+    // build a pipeline function and copy the original data source and mapping templates
+    const pipelineFunctionId = `${typeName}${fieldNameFirstletterUppercase}Function`;
+    ctx.setResource(
+      pipelineFunctionId,
+      new AppSync.FunctionConfiguration({
+        ApiId: Fn.GetAtt(
+          ResourceConstants.RESOURCES.GraphQLAPILogicalID,
+          "ApiId"
+        ),
+        DataSourceName: originalResolver.Properties.DataSourceName,
+        FunctionVersion: "2018-05-29",
+        Name: pipelineFunctionId,
+        RequestMappingTemplate:
+          originalResolver.Properties.RequestMappingTemplate,
+        ResponseMappingTemplate:
+          originalResolver.Properties.ResponseMappingTemplate,
+      })
+    );
+    ctx.mapResourceToStack(FIREHOSE_DIRECTIVE_STACK, pipelineFunctionId);
+
+    // the @model directive does not finalize the resolver mappings directly but only in the
+    // after() phase, which is executed after the firehose directive. Therefore we have to
+    // finalize the resolvers ourselves to get the auto-generated ID as well as the create and
+    // update dates in our DynamoDB pipeline function.
+    const ddbMetata = ctx.metadata.get(DYNAMODB_METADATA_KEY);
+    const hoistedContentGenerator =
+      ddbMetata?.hoistedRequestMappingContent[originalResolverId];
+    if (hoistedContentGenerator) {
+      const hoistedContent = hoistedContentGenerator();
+      if (hoistedContent) {
+        const resource: AppSync.Resolver = ctx.getResource(
+          pipelineFunctionId
+        ) as any;
+        resource.Properties.RequestMappingTemplate = [
+          hoistedContent,
+          resource.Properties.RequestMappingTemplate,
+        ].join("\n");
+        ctx.setResource(pipelineFunctionId, resource);
+      }
+    }
+
+    // completely wipe out the original resolver to avoid circular dependencies between stacks
     if (ctx.template.Resources) {
-      delete ctx.template.Resources[originalCreateResolverId];
-      ctx.getStackMapping().delete(originalCreateResolverId);
-      const ddbMetata = ctx.metadata.get("DynamoDBTransformerMetadata");
+      delete ctx.template.Resources[originalResolverId];
+      ctx.getStackMapping().delete(originalResolverId);
+      const ddbMetata = ctx.metadata.get(DYNAMODB_METADATA_KEY);
       if (ddbMetata?.hoistedRequestMappingContent) {
-        delete ddbMetata.hoistedRequestMappingContent[originalCreateResolverId];
+        delete ddbMetata.hoistedRequestMappingContent[originalResolverId];
       }
     }
 
     // create a new pipeline resolver and attach the pipeline functions
-    const createPipelineResolverId = `MutationCreate${definition.name.value}PipelineResolver`;
-    const typeName = "Mutation";
-    const fieldName = `create${definition.name.value}`;
+    const pipelineResolverId = `${typeName}${fieldNameFirstletterUppercase}PipelineResolver`;
     ctx.setResource(
-      createPipelineResolverId,
+      pipelineResolverId,
       new AppSync.Resolver({
         ApiId: Fn.GetAtt(
           ResourceConstants.RESOURCES.GraphQLAPILogicalID,
@@ -293,7 +322,7 @@ export class FirehoseTransformer extends Transformer {
         PipelineConfig: {
           Functions: [
             Fn.GetAtt(firehoseLambdaFunctionId, "FunctionId"),
-            Fn.GetAtt(createPipelineFunctionId, "FunctionId"),
+            Fn.GetAtt(pipelineFunctionId, "FunctionId"),
           ],
         },
         RequestMappingTemplate: printBlock("Stash resolver specific context.")(
@@ -304,8 +333,8 @@ export class FirehoseTransformer extends Transformer {
           ])
         ),
         ResponseMappingTemplate: "$util.toJson($ctx.result)",
-      }).dependsOn([firehoseLambdaFunctionId, createPipelineFunctionId])
+      }).dependsOn([firehoseLambdaFunctionId, pipelineFunctionId])
     );
-    ctx.mapResourceToStack(FIREHOSE_DIRECTIVE_STACK, createPipelineResolverId);
+    ctx.mapResourceToStack(FIREHOSE_DIRECTIVE_STACK, pipelineResolverId);
   };
 }
