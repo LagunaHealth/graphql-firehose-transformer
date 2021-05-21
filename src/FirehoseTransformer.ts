@@ -19,6 +19,7 @@ import { AppSync, Fn, IAM } from "cloudform-types";
 import { DirectiveNode, ObjectTypeDefinitionNode } from "graphql";
 import {
   FunctionResourceIDs,
+  plurality,
   ResolverResourceIDs,
   ResourceConstants,
 } from "graphql-transformer-common";
@@ -82,6 +83,38 @@ export class FirehoseTransformer extends Transformer {
       ),
       "Mutation",
       `create${definition.name.value}`
+    );
+    this.createFirehoseResolver(
+      ctx,
+      firehoseLambdaFunctionId,
+      ResolverResourceIDs.DynamoDBUpdateResolverResourceID(
+        definition.name.value
+      ),
+      "Mutation",
+      `update${definition.name.value}`
+    );
+    this.createFirehoseResolver(
+      ctx,
+      firehoseLambdaFunctionId,
+      ResolverResourceIDs.DynamoDBDeleteResolverResourceID(
+        definition.name.value
+      ),
+      "Mutation",
+      `delete${definition.name.value}`
+    );
+    this.createFirehoseResolver(
+      ctx,
+      firehoseLambdaFunctionId,
+      ResolverResourceIDs.DynamoDBGetResolverResourceID(definition.name.value),
+      "Query",
+      `get${definition.name.value}`
+    );
+    this.createFirehoseResolver(
+      ctx,
+      firehoseLambdaFunctionId,
+      ResolverResourceIDs.DynamoDBListResolverResourceID(definition.name.value),
+      "Query",
+      plurality(`list${definition.name.value}`)
     );
   };
 
