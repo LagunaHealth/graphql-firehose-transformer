@@ -204,7 +204,7 @@ export class FirehoseTransformer extends Transformer {
             ResourceConstants.RESOURCES.GraphQLAPILogicalID,
             "ApiId"
           ),
-          Name: iamRoleId,
+          Name: firehoseLambdaDataSourceName,
           Type: "AWS_LAMBDA",
           ServiceRoleArn: Fn.GetAtt(iamRoleId, "Arn"),
           LambdaConfig: {
