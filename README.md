@@ -102,6 +102,6 @@ The [MIT License](LICENSE)
 
 ## Credits
 
-The _graphql-firehose-transformer_ library is maintained and sponsored by [Laguna Health](https://www.lagunahealth.com/), a digital recovery assurance company fusing data, technology, and live behavioral health experts to shorten recovery times and reduce readmissions.
+The _graphql-firehose-transformer_ library is maintained and sponsored by [Laguna Health](https://www.lagunahealth.com), a digital recovery assurance company fusing data, technology, and live behavioral health experts to shorten recovery times and reduce readmissions.
 
 Shout-out to the Swiss web and mobile app developer [Florian Gyger](https://github.com/flogy) who built the initial version of this library.
